@@ -35,43 +35,6 @@ jobs:
           node-version: 22
           cache: npm
 
-      #name: Cloud7 Automation CI
-
-# STEP 1: Define workflow triggers
-on:
-  pull_request:
-    branches:
-      - main
-
-  push:
-    branches:
-      - main
-
-  workflow_dispatch:
-
-# STEP 2: Define jobs
-jobs:
-
-  # STEP 3: Smoke Testing Job
-  smoke-tests:
-
-    # Select the operating system
-    runs-on: ubuntu-latest
-
-    # Define execution steps
-    steps:
-
-      # Download repository code
-      - name: Checkout repository
-        uses: actions/checkout@v7.0.1
-
-      # Install Node.js
-      - name: Setup Node.js
-        uses: actions/setup-node@v7.1.0
-        with:
-          node-version: 22
-          cache: npm
-
       # Install project dependencies
       - name: Install dependencies
         run: npm ci
