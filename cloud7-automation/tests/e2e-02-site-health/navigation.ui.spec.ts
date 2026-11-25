@@ -34,7 +34,7 @@ test.describe('E2E-02 Navigation', { tag: '@E2E-02' }, () => {
 
   for (const width of [375, 768]) {
     test(`UI-003 hamburger menu works at ${width}px`, { tag: '@smoke' }, async ({ page }) => {
-      await page.setViewportSize({ width, height: 900 });
+      await page.setViewportSize({ width, height: 100 });
       const home = new HomePage(page);
       await home.open();
       await expect(home.header.toggler).toBeVisible();
