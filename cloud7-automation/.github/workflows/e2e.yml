@@ -1,0 +1,289 @@
+name: cloud7 E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 23 * * *' # 01:00 Cairo time
+  repository_dispatch:
+    types: [cloud7-deployed] # sent by the website's deploy pipeline
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Which suite to run
+        type: choice
+        options: [smoke, regression, cross-browser, known-defects, all]
+        default: smoke
+      base_url:
+        description: Site to test (blank = default)
+        type: string
+        default: ''
+      write_tests:
+        description: Run @write tests (submit real forms) — staging only
+        type: boolean
+        default: false
+
+concurrency:
+  group: e2e-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CI: true
+
+jobs:
+  # ── Decide what to run and against which site ───────────────────────────────
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      smoke: ${{ steps.plan.outputs.smoke }}
+      regression: ${{ steps.plan.outputs.regression }}
+      cross_browser: ${{ steps.plan.outputs.cross_browser }}
+      known_defects: ${{ steps.plan.outputs.known_defects }}
+      base_url: ${{ steps.plan.outputs.base_url }}
+      write_tests: ${{ steps.plan.outputs.write_tests }}
+    steps:
+      - id: plan
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          SUITE: ${{ inputs.suite }}
+          INPUT_BASE: ${{ inputs.base_url }}
+          INPUT_WRITE: ${{ inputs.write_tests }}
+          PAYLOAD_BASE: ${{ github.event.client_payload.base_url }}
+          STAGING_URL: ${{ vars.STAGING_URL }}
+          VAR_BASE: ${{ vars.BASE_URL }}
+        run: |
+          smoke=false; regression=false; cross=false; known=false
+          case "$EVENT" in
+            push|pull_request|repository_dispatch) smoke=true ;;
+            schedule) regression=true; cross=true; known=true ;;
+            workflow_dispatch)
+              case "$SUITE" in
+                smoke) smoke=true ;;
+                regression) regression=true ;;
+                cross-browser) cross=true ;;
+                known-defects) known=true ;;
+                all) smoke=true; regression=true; cross=true; known=true ;;
+              esac ;;
+          esac
+
+          base="$INPUT_BASE"
+          [ -z "$base" ] && base="$PAYLOAD_BASE"
+          if [ -z "$base" ] && [ "$EVENT" = schedule ] && [ -n "$STAGING_URL" ]; then base="$STAGING_URL"; fi
+          [ -z "$base" ] && base="${VAR_BASE:-https://cloud7.io}"
+          if ! [[ "$base" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]]; then echo "::error::Invalid base URL: $base"; exit 1; fi
+
+          write=false
+          if [ "$EVENT" = schedule ] && [ -n "$STAGING_URL" ] && [ "$base" = "$STAGING_URL" ]; then write=true; fi
+          if [ "$EVENT" = workflow_dispatch ] && [ "$INPUT_WRITE" = true ]; then write=true; fi
+
+          {
+            echo "smoke=$smoke"; echo "regression=$regression"; echo "cross_browser=$cross"
+            echo "known_defects=$known"; echo "base_url=$base"; echo "write_tests=$write"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Plan"
+            echo "| Site | Smoke | Regression | Cross-browser | Known defects | Write tests |"
+            echo "|---|---|---|---|---|---|"
+            echo "| $base | $smoke | $regression | $cross | $known | $write |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Fast static checks (no network to the site) ─────────────────────────────
+  typecheck:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-playwright
+        with: { browsers: none }
+      - run: npm run typecheck
+      - name: Every test is discoverable
+        run: npx playwright test --list > /dev/null
+
+  # ── Deploy gate: read-only, known defects skipped ───────────────────────────
+  smoke:
+    needs: [plan, typecheck]
+    if: needs.plan.outputs.smoke == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BASE_URL: ${{ needs.plan.outputs.base_url }}
+      SKIP_KNOWN: 'true'
+      BLOB_NAME: smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-playwright
+        with: { browsers: chromium }
+      - run: npx playwright test --grep @smoke --project=api --project=chromium
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: blob-smoke, path: blob-report, retention-days: 3, if-no-files-found: ignore }
+
+  # ── Nightly regression, sharded ─────────────────────────────────────────────
+  regression:
+    needs: [plan, typecheck]
+    if: needs.plan.outputs.regression == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { project: api, browsers: none, shardIndex: 1, shardTotal: 1 }
+          - { project: chromium, browsers: chromium, shardIndex: 1, shardTotal: 2 }
+          - { project: chromium, browsers: chromium, shardIndex: 2, shardTotal: 2 }
+          - { project: mobile-chrome, browsers: chromium, shardIndex: 1, shardTotal: 1 }
+    env:
+      BASE_URL: ${{ needs.plan.outputs.base_url }}
+      WRITE_TESTS: ${{ needs.plan.outputs.write_tests }}
+      SKIP_KNOWN: 'true'
+      BLOB_NAME: regression-${{ matrix.project }}-${{ matrix.shardIndex }}
+      RECAPTCHA_TEST_TOKEN: ${{ secrets.RECAPTCHA_TEST_TOKEN }}
+      MAILOSAUR_API_KEY: ${{ secrets.MAILOSAUR_API_KEY }}
+      MAILOSAUR_SERVER_ID: ${{ secrets.MAILOSAUR_SERVER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-playwright
+        with: { browsers: '${{ matrix.browsers }}' }
+      - run: npx playwright test --project=${{ matrix.project }} --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blob-regression-${{ matrix.project }}-${{ matrix.shardIndex }}
+          path: blob-report
+          retention-days: 3
+          if-no-files-found: ignore
+
+  # ── Firefox + Safari (WebKit) ───────────────────────────────────────────────
+  cross-browser:
+    needs: [plan, typecheck]
+    if: needs.plan.outputs.cross_browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [firefox, webkit]
+    env:
+      BASE_URL: ${{ needs.plan.outputs.base_url }}
+      SKIP_KNOWN: 'true'
+      BLOB_NAME: cross-${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-playwright
+        with: { browsers: '${{ matrix.project }}' }
+      - run: npx playwright test --project=${{ matrix.project }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: 'blob-cross-${{ matrix.project }}', path: blob-report, retention-days: 3, if-no-files-found: ignore }
+
+  # ── Known defects: expected to fail; flags any that now pass ────────────────
+  known-defects:
+    needs: [plan, typecheck]
+    if: needs.plan.outputs.known_defects == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BASE_URL: ${{ needs.plan.outputs.base_url }}
+      BLOB_NAME: known-defects
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-playwright
+        with: { browsers: chromium }
+      - name: Run known-defect tests (failures expected)
+        continue-on-error: true
+        run: npx playwright test --grep @known-defect --project=api --project=chromium --retries=0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: blob-known-defects, path: blob-report, retention-days: 3, if-no-files-found: ignore }
+
+  # ── One merged report for the whole run ─────────────────────────────────────
+  report:
+    needs: [plan, smoke, regression, cross-browser, known-defects]
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      (needs.smoke.result != 'skipped' || needs.regression.result != 'skipped' ||
+       needs.cross-browser.result != 'skipped' || needs.known-defects.result != 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: write
+    outputs:
+      regressions: ${{ steps.summary.outputs.regressions }}
+      known_now_passing: ${{ steps.summary.outputs.known_now_passing }}
+      totals: ${{ steps.summary.outputs.totals }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-playwright
+        with: { browsers: none }
+      - uses: actions/download-artifact@v4
+        with: { pattern: blob-*, path: all-blob-reports, merge-multiple: true }
+      - name: Merge reports
+        run: |
+          if ! ls all-blob-reports/*.zip >/dev/null 2>&1; then echo "::warning::No test reports to merge"; exit 0; fi
+          npx playwright merge-reports --config merge.config.ts ./all-blob-reports
+      - name: Job summary
+        id: summary
+        if: hashFiles('reports/results.json') != ''
+        run: node scripts/ci-summary.mjs reports/results.json
+      - name: Test results check
+        if: hashFiles('reports/junit.xml') != '' && github.event.pull_request.head.repo.fork != true
+        uses: dorny/test-reporter@v1
+        with:
+          name: Playwright results
+          path: reports/junit.xml
+          reporter: java-junit
+          fail-on-error: false
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('playwright-report/index.html') != ''
+        with: { name: playwright-report, path: playwright-report, retention-days: 14 }
+
+  # ── Latest nightly report on GitHub Pages (opt-in) ──────────────────────────
+  publish-report:
+    needs: report
+    if: >-
+      always() && needs.report.result == 'success' && vars.PUBLISH_REPORT_TO_PAGES == 'true' &&
+      (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: playwright-report, path: playwright-report }
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: playwright-report }
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  # ── Slack alert on failures or fixed defects (not on PRs) ───────────────────
+  notify:
+    needs: [plan, typecheck, smoke, regression, cross-browser, report]
+    if: >-
+      always() && github.event_name != 'pull_request' &&
+      (contains(needs.*.result, 'failure') || (needs.report.outputs.known_now_passing != '' && needs.report.outputs.known_now_passing != '0'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT: ${{ github.event_name }}
+          SITE: ${{ needs.plan.outputs.base_url }}
+          TOTALS: ${{ needs.report.outputs.totals }}
+          REGRESSIONS: ${{ needs.report.outputs.regressions }}
+          FIXED: ${{ needs.report.outputs.known_now_passing }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then echo "SLACK_WEBHOOK_URL not set — skipping"; exit 0; fi
+          text=$(printf '*cloud7 E2E* (%s) on %s\n%s\nNew failures: %s · Known defects now passing: %s\n<%s|Open run>' \
+            "$EVENT" "$SITE" "${TOTALS:-no report}" "${REGRESSIONS:-?}" "${FIXED:-0}" "$RUN_URL")
+          jq -n --arg t "$text" '{text: $t}' | curl -sS -X POST -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK_URL"

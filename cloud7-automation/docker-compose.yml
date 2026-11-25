@@ -1,0 +1,39 @@
+# One service per suite. Values come from your shell or the .env file next to this one.
+#   docker compose run --rm smoke
+#   docker compose run --rm regression
+#   docker compose run --rm tests test -- --grep "UI-017"     # anything else
+# Run suites one at a time: they share the report folders.
+
+x-tests: &tests
+  build: .
+  image: cloud7-automation:latest
+  ipc: host # Chromium needs more shared memory than Docker's 64 MB default
+  init: true
+  environment:
+    BASE_URL: ${BASE_URL:-https://cloud7.io}
+    WRITE_TESTS: ${WRITE_TESTS:-false}
+    ALLOW_PROD_WRITES: ${ALLOW_PROD_WRITES:-false}
+    SKIP_KNOWN: ${SKIP_KNOWN:-false}
+    TTFB_BUDGET_MS: ${TTFB_BUDGET_MS:-800}
+    RECAPTCHA_TEST_TOKEN: ${RECAPTCHA_TEST_TOKEN:-}
+    MAILOSAUR_API_KEY: ${MAILOSAUR_API_KEY:-}
+    MAILOSAUR_SERVER_ID: ${MAILOSAUR_SERVER_ID:-}
+  volumes:
+    - ./playwright-report:/app/playwright-report
+    - ./test-results:/app/test-results
+
+services:
+  tests:
+    <<: *tests
+  smoke:
+    <<: *tests
+    command: ['test:smoke']
+  regression:
+    <<: *tests
+    command: ['test:regression']
+  cross-browser:
+    <<: *tests
+    command: ['test:cross-browser']
+  known-defects:
+    <<: *tests
+    command: ['test:known-defects']

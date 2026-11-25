@@ -1,0 +1,12 @@
+node_modules
+playwright-report
+test-results
+blob-report
+all-blob-reports
+reports
+.env
+.git
+.github
+*.zip
+Dockerfile
+docker-compose.yml

@@ -1,0 +1,55 @@
+on: 
+  
+  pull_request:
+    jobs:
+#Smoke Testing Job:
+smoke-tests:
+
+# STEP 4: Select the operating system
+runs-on: ubuntu-latest
+
+# STEP 5: Define execution steps
+steps:
+
+  # Download repository code
+  - name: Checkout repository
+  - uses: actions/checkout@v7.0.1
+
+  # Install Node.js
+  - name: Setup Node.js
+    uses: actions/setup-node@v7.1.0
+    with:
+      node-version: 22
+      cache: npm
+
+  # Install project dependencies
+  - name: Install dependencies
+    run: npm ci
+
+  # Install Playwright browser
+  - name: Install Playwright
+    run: npx playwright install --with-deps chromium
+
+  # Execute Smoke Tests
+  - name: Run Smoke Tests
+    run: npm run test:smoke
+    env:
+      BASE_URL: https://cloud7.io
+      WRITE_TESTS: "false"
+      ALLOW_PROD_WRITES: "false"
+      SKIP_KNOWN: "true"
+
+      name: Build Docker Image
+      run: docker build -t cloud7-automation:ci 
+
+  # Upload test reports
+  - name: Upload Playwright Reports
+    if: always()
+    uses: actions/upload-artifact@v4
+    with:
+      name: playwright-report
+      path: |
+        playwright-report/
+        test-results/
+      if-no-files-found: ignore
+      retention-days: 14

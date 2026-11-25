@@ -1,0 +1,27 @@
+{
+  "name": "cloud7-automation",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Playwright UI + API automation for cloud7.io \u2014 E2E-01 (visitor to demo lead) and E2E-02 (website health, navigation & content)",
+  "scripts": {
+    "test": "playwright test",
+    "test:smoke": "cross-env SKIP_KNOWN=true playwright test --grep @smoke --project=api --project=chromium",
+    "test:regression": "playwright test --project=api --project=chromium --project=mobile-chrome",
+    "test:cross-browser": "playwright test --project=firefox --project=webkit",
+    "test:api": "playwright test --project=api",
+    "test:e2e-01": "playwright test --grep @E2E-01",
+    "test:e2e-02": "playwright test --grep @E2E-02",
+    "test:known-defects": "playwright test --grep @known-defect --project=api --project=chromium",
+    "report": "playwright show-report",
+    "typecheck": "tsc --noEmit",
+    "report:merge": "playwright merge-reports --config merge.config.ts ./all-blob-reports",
+    "docker:build": "docker build -t cloud7-automation .",
+    "docker:smoke": "docker compose run --rm smoke"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "^22.0.0",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.6.0"
+  }
+}

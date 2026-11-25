@@ -1,0 +1,42 @@
+name: Setup Playwright
+description: Node, dependencies and (cached) Playwright browsers
+
+inputs:
+  browsers:
+    description: Space-separated browsers to install (chromium firefox webkit), or "none" for API-only jobs
+    default: chromium
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
+
+    - name: Playwright version
+      id: pw
+      shell: bash
+      run: echo "version=$(npx playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+    - name: Cache browsers
+      if: inputs.browsers != 'none'
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ms-playwright
+        key: pw-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ inputs.browsers }}
+
+    - name: Install browsers
+      if: inputs.browsers != 'none' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: npx playwright install --with-deps ${{ inputs.browsers }}
+
+    - name: Install system dependencies (browsers from cache)
+      if: inputs.browsers != 'none' && steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: npx playwright install-deps ${{ inputs.browsers }}
