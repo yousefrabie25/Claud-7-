@@ -1,0 +1,62 @@
+name: Cloud7 Smoke CI
+
+on:
+  push:
+    branches: [main]
+
+  pull_request:
+    branches: [main]
+
+  workflow_dispatch:
+
+jobs:
+  smoke-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cloud7-automation/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: cloud7-automation
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: cloud7-automation
+
+      - name: TypeScript Check
+        run: npm run typecheck
+        working-directory: cloud7-automation
+
+      - name: Build Docker Image
+        run: docker build -t cloud7-automation:ci .
+        working-directory: cloud7-automation
+
+      - name: Run Smoke Tests
+        run: docker compose run --rm smoke
+        working-directory: cloud7-automation
+        env:
+          BASE_URL: https://cloud7.io
+          WRITE_TESTS: "false"
+          ALLOW_PROD_WRITES: "false"
+          SKIP_KNOWN: "true"
+
+      - name: Upload Playwright Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-results
+          path: |
+            cloud7-automation/playwright-report/
+            cloud7-automation/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
