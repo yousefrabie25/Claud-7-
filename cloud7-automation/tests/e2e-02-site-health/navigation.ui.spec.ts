@@ -38,9 +38,9 @@ test.describe('E2E-02 Navigation', { tag: '@E2E-02' }, () => {
       const home = new HomePage(page);
       await home.open();
       await expect(home.header.toggler).toBeVisible();
-      await expect(home.header.menu).toBeHidden();
+      await home.header.expectMenuClosed();   // was: await expect(home.header.menu).toBeHidden();
       await home.header.toggler.click();
-      await expect(home.header.menu).toBeVisible();
+      await home.header.expectMenuOpen();     // was: await expect(home.header.menu).toBeVisible();
       await home.header.topItem('Pricing').click();
       await expect(page).toHaveURL(/\/pricing\/?$/);
       expect(await hasHorizontalScroll(page), 'horizontal scroll').toBe(false);
@@ -65,8 +65,8 @@ test.describe('E2E-02 Navigation', { tag: '@E2E-02' }, () => {
 
   test('UI-004 logo returns to the home page', { tag: '@mobile' }, async ({ page, pricingPage }) => {
     await pricingPage.open();
-    await pricingPage.header.logo.click();
-    await expect(page).toHaveURL(/^https?:\/\/[^/]+\/?$/);
+    await pricingPage.header.logo.click({ noWaitAfter: true });
+    await expect(page).toHaveURL(/^https?:\/\/cloud7.io\/?$/);
   });
 
   test('UI-004b logo link is announced as "Cloud7"', { tag: '@known-defect' }, async ({ homePage }) => {
